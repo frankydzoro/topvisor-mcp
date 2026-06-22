@@ -46,7 +46,7 @@ export function registerCoreTools(server: McpServer, client: TopvisorApiClient):
 
   server.tool(
     "topvisor_services",
-    "List all Topvisor API v2 services, operators, methods, searcher_key reference, filter operators, and all 18 tools in this MCP server. Works without credentials.",
+    "List all Topvisor API v2 services, operators, methods, searcher_key reference, filter operators, and all 17 tools in this MCP server. Works without credentials.",
     {},
     async () => {
       return json({
@@ -150,12 +150,30 @@ export function registerCoreTools(server: McpServer, client: TopvisorApiClient):
 
   server.tool(
     "topvisor_balance",
-    "Get account balance information including balance_all, personal, bonus, plan amounts and current tariff.",
+    `Get account balance. Returns balance calculated from transaction history (sum of all deposits minus charges).
+
+NOTE: The Topvisor bank_2/info endpoint returns empty result for single-user accounts — this is a known API limitation confirmed empirically (result:[], total:1 regardless of parameters; fields parameter causes error 2003). As a workaround, this tool computes the balance by summing bank_2/history transactions. Returns { computed_balance, transaction_count, last_transactions[] }.`,
     {},
     async () => {
-      const result = await client.request("get", "bank_2", "info", {});
+      // bank_2/info is broken for single-user accounts — returns result:[] regardless of params.
+      // Workaround: sum all transactions from bank_2/history to compute current balance.
+      const result = await client.request("get", "bank_2", "history", {
+        fields: ["date", "info", "sum", "type"],
+        limit: 1000,
+        orders: [{ name: "date", direction: "DESC" }],
+      });
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+      const transactions = result.result as Array<{ date: string; info: string; sum: number; type: string }>;
+      const balance = Array.isArray(transactions)
+        ? transactions.reduce((acc, t) => acc + (typeof t.sum === "number" ? t.sum : 0), 0)
+        : 0;
+      return json({
+        computed_balance: Math.round(balance * 100) / 100,
+        currency: "RUB",
+        transaction_count: Array.isArray(transactions) ? transactions.length : 0,
+        last_transactions: Array.isArray(transactions) ? transactions.slice(0, 5) : [],
+        note: "Balance computed from transaction history sum. bank_2/info endpoint returns empty for single-user accounts (API limitation).",
+      });
     }
   );
 
@@ -265,16 +283,76 @@ export function registerCoreTools(server: McpServer, client: TopvisorApiClient):
 
   server.tool(
     "topvisor_list_regions",
-    "List configured searchers and regions for a project. Returns region_index for each region — use this index (NOT region_key) in topvisor_get_history, topvisor_check_price, topvisor_check_positions. This is a critical tool: always call after adding regions to get assigned region_index values.",
+    `List configured searchers and regions for a project. Returns region_key and region_index for each region.
+
+CRITICAL: region_key (used when adding a region) is NOT the same as region_index (used in topvisor_get_history, topvisor_check_price, topvisor_check_positions). Always call this tool after adding regions to get the correct region_index values.
+
+Example mapping for project 29248320 (green-line24.ru):
+- Samara:  region_key=51  → region_index=83
+- Tolyatti: region_key=240 → region_index=112
+- Zhigulyovsk: region_key=11132 → region_index=829
+
+NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT searchers_regions/export which returns CSV with no region_index).`,
     {
       project_id: z.number().int().describe("Project ID to list configured regions for"),
-      extra_body: z.record(z.any()).default({}).describe("Additional params passed verbatim (API params not fully documented — ⚠️ use topvisor_request if needed)"),
     },
-    async ({ project_id, extra_body }) => {
-      const body: Record<string, unknown> = { project_id, ...extra_body };
-      const result = await client.request("get", "positions_2", "searchers_regions/export", body);
+    async ({ project_id }) => {
+      const result = await client.request("get", "projects_2", "projects", {
+        filters: [{ name: "id", operator: "EQUALS", values: [project_id] }],
+        show_searchers_and_regions: 2,
+      });
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+
+      // Extract searchers and regions from project result
+      const projects = result.result as Array<{
+        id: number;
+        searchers?: Array<{
+          id: number;
+          key: number;
+          name: string;
+          regions?: Array<{
+            id: number;
+            key: number;
+            index: number;
+            name: string;
+            lang: string;
+            device: number;
+            depth: number;
+            enabled: number;
+            type: string;
+            countryCode: string;
+            areaName: string;
+          }>;
+        }>;
+      }>;
+
+      if (!Array.isArray(projects) || projects.length === 0) {
+        return json({ searchers: [], note: "No project found with the given project_id" });
+      }
+
+      const project = projects[0];
+      const searchers = (project.searchers ?? []).map((s) => ({
+        searcher_key: s.key,
+        searcher_name: s.name,
+        regions: (s.regions ?? []).map((r) => ({
+          region_key: r.key,
+          region_index: r.index,
+          region_name: r.name,
+          area_name: r.areaName,
+          lang: r.lang,
+          device: r.device,
+          depth: r.depth,
+          enabled: r.enabled === 1,
+          type: r.type,
+          country_code: r.countryCode,
+        })),
+      }));
+
+      return json({
+        project_id,
+        searchers,
+        note: "Use region_index (NOT region_key) in topvisor_get_history, topvisor_check_price, topvisor_check_positions.",
+      });
     }
   );
 

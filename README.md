@@ -72,7 +72,7 @@ The server starts without credentials — `tools/list` and `topvisor_services` w
 |---|---|---|
 | `topvisor_services` | — | List all API services, searcher_key reference, filter operators. Works without credentials. |
 | `topvisor_request` | any | Generic escape hatch: call any Topvisor API v2 method directly. |
-| `topvisor_balance` | bank_2 | Get account balance (balance_all, personal, bonus, plan, tariff). |
+| `topvisor_balance` | bank_2 | Get account balance computed from transaction history (bank_2/info is non-functional for single-user accounts). |
 | `topvisor_bank_history` | bank_2 | Get transaction history (deposits, charges, bonuses). |
 | `topvisor_list_projects` | projects_2 | List projects with filtering, ordering, optional searchers/regions. |
 | `topvisor_add_project` | projects_2 | Create a new project by URL. |
@@ -129,6 +129,19 @@ Topvisor uses a stateful hierarchy — unlike stateless rank-check APIs, you fir
 
 **Always call `topvisor_list_regions` after adding a region** to retrieve the assigned `region_index`. Do not assume `region_key === region_index`.
 
+Confirmed live on project 29248320 (green-line24.ru):
+
+| City | region_key | region_index |
+|---|---|---|
+| Samara | 51 | 83 |
+| Tolyatti | 240 | 112 |
+| Zhigulyovsk | 11132 | 829 |
+| Syzran | 11139 | 557 |
+
+Note: region_key=51 for Yandex corresponds to the Yandex `rids` value for Samara — but this coincidence does **not** hold in general.
+
+`topvisor_list_regions` uses `get/projects_2/projects` with `show_searchers_and_regions=2` (the `searchers_regions/export` endpoint returns CSV with no `region_index` and is not used).
+
 ## checker/go is async
 
 `topvisor_check_positions` submits a job to the Topvisor queue and returns immediately with `projectsIds`. The actual position collection happens in the background — typically minutes to hours depending on the queue and number of keywords/regions.
@@ -167,12 +180,16 @@ When a tool encounters a Topvisor error, it returns:
 }
 ```
 
-## Known limitations
+## Known limitations and API quirks
 
 - **Rate limits**: Topvisor API rate limits are not documented. This server does not implement automatic retries or backoff in v1. If you hit rate limit errors, add delays between calls manually.
 - **Async checker**: `topvisor_check_positions` does not poll for completion. You must poll `topvisor_list_projects` yourself.
 - **Undocumented methods**: Several edit/delete methods (`edit/projects_2/projects/*`, `del/keywords_2/keywords`, etc.) have undocumented parameters and are not available as typed tools. Use `topvisor_request` as an escape hatch.
 - **`region_key` for specific cities**: The Topvisor region catalog uses its own identifiers per search engine. Use `topvisor_request` with `get/positions_2/searchers_regions` to browse available regions.
+- **`topvisor_balance`**: The `bank_2/info` endpoint returns empty `result:[]` for single-user accounts regardless of parameters (confirmed: `fields` causes error 2003, all other params ignored). Balance is computed as sum of `bank_2/history` transactions.
+- **`topvisor_add_project`**: Returns a bare integer (`project_id`), not an object or array.
+- **`topvisor_add_searcher` / `topvisor_add_region`**: Return `0` on duplicate add (idempotent, not an error).
+- **`searchers_regions/export`**: Returns CSV in `windows-1251` encoding with no `region_index` field — not usable for the key→index mapping. Use `topvisor_list_regions` instead (which calls `projects_2/projects` with `show_searchers_and_regions=2`).
 
 ## License
 
