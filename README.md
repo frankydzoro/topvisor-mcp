@@ -153,6 +153,22 @@ Note: region_key=51 for Yandex corresponds to the Yandex `rids` value for Samara
 
 There is no built-in wait/poll in this MCP tool (v1). This is intentional — position checks can take hours, which would exceed MCP client timeouts.
 
+## SERP snapshots
+
+SERP snapshots are only collected when a position check is submitted with `do_snapshots: 1` (`topvisor_check_positions { ..., do_snapshots: 1 }`). Snapshots typically become available *before* the position collection fully completes.
+
+`topvisor_get_snapshots` returns the snapshot data under the **`snapshotsData`** key (not `data`). Keys have the format `"YYYY-MM-DD:position:region_index"` and map to objects like:
+
+```json
+{
+  "snapshotsData": {
+    "2026-06-23:1:83": { "url": "https://green-line24.ru/", "domain": "green-line24.ru", "snippet_title": "", "snippet_body": "" }
+  }
+}
+```
+
+Note: `snippet_title` / `snippet_body` are returned but may be empty strings — Topvisor does not always populate them even when requested via `positions_fields`.
+
 ## Error format
 
 Topvisor API always returns HTTP 200. Errors are indicated in the response body:

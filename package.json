@@ -1,20 +1,52 @@
 {
   "name": "@scom82/topvisor-mcp",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Unofficial MCP server for the Topvisor API v2 — Yandex/Google rank tracking: projects, keywords, searchers+regions, position checks, history, summary, SERP snapshots, balance.",
   "type": "module",
   "main": "dist/index.js",
-  "bin": { "topvisor-mcp": "dist/index.js" },
-  "files": ["dist"],
-  "scripts": { "build": "tsc", "start": "node dist/index.js" },
-  "keywords": ["mcp","model-context-protocol","topvisor","seo","rank-tracker","positions","yandex","google","serp"],
+  "bin": {
+    "topvisor-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "topvisor",
+    "seo",
+    "rank-tracker",
+    "positions",
+    "yandex",
+    "google",
+    "serp"
+  ],
   "author": "SCom-82",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/SCom-82/topvisor-mcp.git" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/SCom-82/topvisor-mcp.git"
+  },
   "homepage": "https://github.com/SCom-82/topvisor-mcp#readme",
-  "bugs": { "url": "https://github.com/SCom-82/topvisor-mcp/issues" },
-  "engines": { "node": ">=18" },
-  "publishConfig": { "access": "public" },
-  "dependencies": { "@modelcontextprotocol/sdk": "^1.12.1", "zod": "^3.24.4" },
-  "devDependencies": { "@types/node": "^22.15.3", "typescript": "^5.8.3" }
+  "bugs": {
+    "url": "https://github.com/SCom-82/topvisor-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
+    "zod": "^3.24.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.3",
+    "typescript": "^5.8.3"
+  }
 }
