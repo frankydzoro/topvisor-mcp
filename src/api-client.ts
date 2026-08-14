@@ -28,12 +28,14 @@ export class TopvisorApiClient {
   private userId: string;
   private apiKey: string;
   private httpTimeoutMs: number;
+  private retries: number;
 
   constructor() {
     this.baseUrl = (process.env.TOPVISOR_API_URL || "https://api.topvisor.com/v2/json").replace(/\/$/, "");
     this.userId = process.env.TOPVISOR_USER_ID || "";
     this.apiKey = process.env.TOPVISOR_API_KEY || "";
     this.httpTimeoutMs = parseInt(process.env.TOPVISOR_HTTP_TIMEOUT_MS || "30000", 10);
+    this.retries = parseInt(process.env.TOPVISOR_RETRIES || "2", 10);
   }
 
   assertCreds(): void {
@@ -51,52 +53,87 @@ export class TopvisorApiClient {
     this.assertCreds();
 
     const url = `${this.baseUrl}/${operator}/${service}/${method}`;
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+    const maxRetries = this.retries;
+    let lastHttpStatus = 0;
+    let lastTopvisorCode = 0;
 
-    let response: Response;
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "User-Id": this.userId,
-          "Authorization": `bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
-    } catch (err: unknown) {
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), this.httpTimeoutMs);
+
+      let response: Response;
+      try {
+        response = await fetch(url, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "User-Id": this.userId,
+            "Authorization": `bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        });
+      } catch (err: unknown) {
+        clearTimeout(timer);
+        if (err instanceof Error && err.name === "AbortError") {
+          // Transient timeout — retryable if attempts remain
+          if (attempt < maxRetries) {
+            await this.delay(attempt);
+            continue;
+          }
+          throw new Error(`Request timed out after ${this.httpTimeoutMs}ms`);
+        }
+        throw err;
+      }
       clearTimeout(timer);
-      if (err instanceof Error && err.name === "AbortError") {
-        throw new Error(`Request timed out after ${this.httpTimeoutMs}ms`);
+      lastHttpStatus = response.status;
+
+      let data: unknown;
+      try {
+        data = await response.json();
+      } catch {
+        if (!response.ok && attempt < maxRetries && response.status >= 500) {
+          await this.delay(attempt);
+          continue;
+        }
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status} on ${operator}/${service}/${method}`);
+        }
+        throw new Error(`Failed to parse JSON response from ${operator}/${service}/${method}`);
       }
-      throw err;
-    }
-    clearTimeout(timer);
 
-    let data: unknown;
-    try {
-      data = await response.json();
-    } catch {
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status} on ${operator}/${service}/${method}`);
+      // Canonical Topvisor error detection: result===null AND errors[] present
+      // All API responses come as HTTP 200 — do NOT use HTTP status for error detection
+      const d = data as Record<string, unknown>;
+      if (d?.result === null && Array.isArray(d?.errors) && d.errors.length > 0) {
+        const errors = d.errors as TopvisorError[];
+        const retryable =
+          errors.some((e) => e.code === 429) ||
+          (lastHttpStatus >= 500 && lastHttpStatus <= 599);
+        if (retryable && attempt < maxRetries) {
+          lastTopvisorCode = errors[0]?.code ?? 0;
+          await this.delay(attempt);
+          continue;
+        }
+        return { ok: false, errors };
       }
-      throw new Error(`Failed to parse JSON response from ${operator}/${service}/${method}`);
+
+      return {
+        ok: true,
+        result: d?.result !== undefined ? d.result : data,
+        ...(d?.limitedBy !== undefined ? { limitedBy: d.limitedBy as number } : {}),
+        ...(d?.total !== undefined ? { total: d.total as number } : {}),
+      };
     }
 
-    // Canonical Topvisor error detection: result===null AND errors[] present
-    // All API responses come as HTTP 200 — do NOT use HTTP status for error detection
-    const d = data as Record<string, unknown>;
-    if (d?.result === null && Array.isArray(d?.errors) && d.errors.length > 0) {
-      return { ok: false, errors: d.errors as TopvisorError[] };
-    }
+    // Unreachable in practice (loop always returns or throws), kept for type-safety
+    throw new Error(`Request failed after ${maxRetries + 1} attempts (HTTP ${lastHttpStatus}, topvisor code ${lastTopvisorCode})`);
+  }
 
-    return {
-      ok: true,
-      result: d?.result !== undefined ? d.result : data,
-      ...(d?.limitedBy !== undefined ? { limitedBy: d.limitedBy as number } : {}),
-      ...(d?.total !== undefined ? { total: d.total as number } : {}),
-    };
+  private async delay(attempt: number): Promise<void> {
+    const base = 500;
+    const jitter = Math.floor(Math.random() * 200);
+    const ms = base * 2 ** attempt + jitter;
+    await new Promise((resolve) => setTimeout(resolve, ms));
   }
 }

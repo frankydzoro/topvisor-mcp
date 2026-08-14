@@ -22,6 +22,18 @@ function validationError(msg: string) {
   };
 }
 
+// Wrap a result list with pagination metadata when the caller opts in (B4).
+// Keeps default output backward-compatible (bare array/object) unless include_meta is true.
+function maybeMeta(
+  result: unknown,
+  total: number | undefined,
+  limitedBy: number | undefined,
+  includeMeta: boolean | undefined
+) {
+  if (!includeMeta) return json(result);
+  return json({ result, total: total ?? null, limitedBy: limitedBy ?? null });
+}
+
 // ─── Shared zod fragments ─────────────────────────────────────────────────────
 
 const Filter = z.object({
@@ -119,6 +131,13 @@ export function registerCoreTools(server: McpServer, client: TopvisorApiClient):
           "topvisor_list_regions",
           "topvisor_list_keywords",
           "topvisor_import_keywords",
+          "topvisor_list_groups",
+          "topvisor_add_groups",
+          "topvisor_delete_groups",
+          "topvisor_list_folders",
+          "topvisor_add_folders",
+          "topvisor_delete_folders",
+          "topvisor_delete_keywords",
           "topvisor_check_price",
           "topvisor_check_positions",
           "topvisor_get_history",
@@ -185,15 +204,16 @@ NOTE: The Topvisor bank_2/info endpoint returns empty result for single-user acc
       orders: z.array(Order).optional(),
       limit: limitSchema,
       offset: z.number().int().optional(),
+      include_meta: z.boolean().optional().describe("If true, wrap result as {result, total, limitedBy} for pagination."),
     },
-    async ({ fields, orders, limit, offset }) => {
+    async ({ fields, orders, limit, offset, include_meta }) => {
       const body: Record<string, unknown> = { fields };
       if (orders) body.orders = orders;
       if (limit !== undefined) body.limit = limit;
       if (offset !== undefined) body.offset = offset;
       const result = await client.request("get", "bank_2", "history", body);
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+      return maybeMeta(result.result, result.total, result.limitedBy, include_meta);
     }
   );
 
@@ -210,8 +230,9 @@ NOTE: The Topvisor bank_2/info endpoint returns empty result for single-user acc
       offset: z.number().int().optional(),
       show_site_stat: z.boolean().optional(),
       show_searchers_and_regions: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional().describe("0=none, 1=searchers+regions, 2=full details"),
+      include_meta: z.boolean().optional().describe("If true, wrap result as {result, total, limitedBy} for pagination."),
     },
-    async ({ fields, filters, orders, limit, offset, show_site_stat, show_searchers_and_regions }) => {
+    async ({ fields, filters, orders, limit, offset, show_site_stat, show_searchers_and_regions, include_meta }) => {
       const body: Record<string, unknown> = { fields };
       if (filters) body.filters = filters;
       if (orders) body.orders = orders;
@@ -221,7 +242,7 @@ NOTE: The Topvisor bank_2/info endpoint returns empty result for single-user acc
       if (show_searchers_and_regions !== undefined) body.show_searchers_and_regions = show_searchers_and_regions;
       const result = await client.request("get", "projects_2", "projects", body);
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+      return maybeMeta(result.result, result.total, result.limitedBy, include_meta);
     }
   );
 
@@ -370,8 +391,9 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
       offset: z.number().int().optional(),
       currency: z.enum(["RUB", "USD"]).optional(),
       show_trash: z.boolean().optional().describe("Include deleted keywords"),
+      include_meta: z.boolean().optional().describe("If true, wrap result as {result, total, limitedBy} for pagination."),
     },
-    async ({ project_id, fields, filters, orders, limit, offset, currency, show_trash }) => {
+    async ({ project_id, fields, filters, orders, limit, offset, currency, show_trash, include_meta }) => {
       const body: Record<string, unknown> = { project_id, fields };
       if (filters) body.filters = filters;
       if (orders) body.orders = orders;
@@ -381,7 +403,7 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
       if (show_trash !== undefined) body.show_trash = show_trash;
       const result = await client.request("get", "keywords_2", "keywords", body);
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+      return maybeMeta(result.result, result.total, result.limitedBy, include_meta);
     }
   );
 
@@ -409,6 +431,133 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
       if (move_duplicate_group_id !== undefined) body.move_duplicate_group_id = move_duplicate_group_id;
       if (move_duplicate_group_name) body.move_duplicate_group_name = move_duplicate_group_name;
       const result = await client.request("add", "keywords_2", "keywords/import", body);
+      if (!result.ok) return apiError(result.errors);
+      return json(result.result);
+    }
+  );
+
+  // ── keywords_2: группы и папки (A1) ─────────────────────────────────────────
+
+  server.tool(
+    "topvisor_list_groups",
+    "List groups in a project. Optionally include deleted (trash) groups with show_trash=1.",
+    {
+      project_id: z.number().int(),
+      show_trash: z.boolean().optional().describe("Include deleted (trash) groups. Default false."),
+      include_meta: z.boolean().optional().describe("If true, wrap result as {result, total, limitedBy} for pagination."),
+    },
+    async ({ project_id, show_trash, include_meta }) => {
+      const body: Record<string, unknown> = { project_id };
+      if (show_trash !== undefined) body.show_trash = show_trash ? 1 : 0;
+      const result = await client.request("get", "keywords_2", "groups", body);
+      if (!result.ok) return apiError(result.errors);
+      return maybeMeta(result.result, result.total, result.limitedBy, include_meta);
+    }
+  );
+
+  server.tool(
+    "topvisor_add_groups",
+    "Add one or more groups to a project. Optionally position them via to_type/to_id.",
+    {
+      project_id: z.number().int(),
+      names: z.array(z.string()).describe("Group names to create (e.g. ['Моя группа'])."),
+      on: z.boolean().optional().describe("Group active (default true)."),
+      to_type: z.enum(["in_folder", "in_folder_last", "before_group", "after_group"]).optional().describe("Insertion position: in_folder / in_folder_last / before_group / after_group. Default in_folder."),
+      to_id: z.number().int().optional().describe("Target folder or group id for to_type (default 0 = top level)."),
+    },
+    async ({ project_id, names, on, to_type, to_id }) => {
+      const body: Record<string, unknown> = { project_id, names };
+      if (on !== undefined) body.on = on;
+      if (to_type !== undefined) body.to_type = to_type;
+      if (to_id !== undefined) body.to_id = to_id;
+      const result = await client.request("add", "keywords_2", "groups", body);
+      if (!result.ok) return apiError(result.errors);
+      return json(result.result);
+    }
+  );
+
+  server.tool(
+    "topvisor_delete_groups",
+    "Delete (move to temporary trash) groups matching filters. Provide filters directly, or ids for a convenience {id, IN, ids} filter.",
+    {
+      project_id: z.number().int(),
+      ids: z.array(z.number().int()).optional().describe("Group IDs to delete (convenience — builds a filters array)."),
+      filters: z.array(Filter).optional().describe("Raw filter criteria (alternative to ids)."),
+    },
+    async ({ project_id, ids, filters }) => {
+      const effFilters = filters ?? (ids && ids.length ? [{ name: "id", operator: "IN", values: ids }] : undefined);
+      if (!effFilters) return validationError("Provide either 'ids' or 'filters'");
+      const result = await client.request("del", "keywords_2", "groups", { project_id, filters: effFilters });
+      if (!result.ok) return apiError(result.errors);
+      return json(result.result);
+    }
+  );
+
+  server.tool(
+    "topvisor_list_folders",
+    "List folders in a project.",
+    {
+      project_id: z.number().int(),
+      include_meta: z.boolean().optional().describe("If true, wrap result as {result, total, limitedBy} for pagination."),
+    },
+    async ({ project_id, include_meta }) => {
+      const result = await client.request("get", "keywords_2", "folders", { project_id });
+      if (!result.ok) return apiError(result.errors);
+      return maybeMeta(result.result, result.total, result.limitedBy, include_meta);
+    }
+  );
+
+  server.tool(
+    "topvisor_add_folders",
+    "Add a folder to a project. Max nesting depth is 3.",
+    {
+      project_id: z.number().int(),
+      name: z.string().optional().describe("Folder name (default 'Новая папка')."),
+      to_type: z.enum(["before", "after", "in"]).optional().describe("Insertion position: before / after / in. Default 'in'."),
+      to_id: z.number().int().optional().describe("Target folder id for to_type (default 0)."),
+    },
+    async ({ project_id, name, to_type, to_id }) => {
+      const body: Record<string, unknown> = { project_id };
+      if (name !== undefined) body.name = name;
+      if (to_type !== undefined) body.to_type = to_type;
+      if (to_id !== undefined) body.to_id = to_id;
+      const result = await client.request("add", "keywords_2", "folders", body);
+      if (!result.ok) return apiError(result.errors);
+      return json(result.result);
+    }
+  );
+
+  server.tool(
+    "topvisor_delete_folders",
+    "Delete (move to temporary trash) folders matching filters. Provide filters directly, or ids for a convenience {id, IN, ids} filter.",
+    {
+      project_id: z.number().int(),
+      ids: z.array(z.number().int()).optional(),
+      filters: z.array(Filter).optional(),
+    },
+    async ({ project_id, ids, filters }) => {
+      const effFilters = filters ?? (ids && ids.length ? [{ name: "id", operator: "IN", values: ids }] : undefined);
+      if (!effFilters) return validationError("Provide either 'ids' or 'filters'");
+      const result = await client.request("del", "keywords_2", "folders", { project_id, filters: effFilters });
+      if (!result.ok) return apiError(result.errors);
+      return json(result.result);
+    }
+  );
+
+  // ── keywords_2: удаление ключей (A2) ───────────────────────────────────────
+
+  server.tool(
+    "topvisor_delete_keywords",
+    "Delete (move to temporary trash) keywords matching filters. Provide filters directly, or ids for a convenience {id, IN, ids} filter. Restore via edit/keywords_2/keywords/undel through topvisor_request.",
+    {
+      project_id: z.number().int(),
+      ids: z.array(z.number().int()).optional().describe("Keyword IDs to delete (convenience — builds a filters array)."),
+      filters: z.array(Filter).optional().describe("Raw filter criteria (alternative to ids)."),
+    },
+    async ({ project_id, ids, filters }) => {
+      const effFilters = filters ?? (ids && ids.length ? [{ name: "id", operator: "IN", values: ids }] : undefined);
+      if (!effFilters) return validationError("Provide either 'ids' or 'filters'");
+      const result = await client.request("del", "keywords_2", "keywords", { project_id, filters: effFilters });
       if (!result.ok) return apiError(result.errors);
       return json(result.result);
     }
@@ -446,7 +595,7 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
 
   server.tool(
     "topvisor_check_positions",
-    "ASYNC: Submit a position check job to the Topvisor queue. Returns projectsIds immediately — actual data collection runs in the background (minutes to hours depending on queue). To monitor progress, poll topvisor_list_projects for status_positions/positions_percent fields. Read results later via topvisor_get_history once collection is complete. To preview cost first use topvisor_check_price.",
+    "Submit a position check job to the Topvisor queue. By default returns projectsIds immediately (ASYNC — collection runs in the background, minutes to hours depending on queue). Set wait=true to block until collection completes and optionally auto-fetch history. To preview cost first use topvisor_check_price. To monitor manually, poll topvisor_list_projects for status_positions/positions_percent.",
     {
       project_id: z.number().int().describe("Project ID (converted to filter internally)"),
       regions_indexes: z.array(z.number().int()).optional().describe("Region indexes to check (from topvisor_list_regions)"),
@@ -455,8 +604,12 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
       groups_ids: z.array(z.number().int()).optional(),
       do_snapshots: z.union([z.literal(0), z.literal(1)]).optional().describe("1 = also collect SERP snapshots (accessible via topvisor_get_snapshots)"),
       keyword_id: z.number().int().optional().describe("Check a single keyword only (requires regions_indexes; ignores groups_ids, do_snapshots)"),
+      wait: z.boolean().optional().describe("If true, poll until the check completes and return the final status/history instead of returning immediately. Default false."),
+      wait_timeout_seconds: z.number().int().min(30).max(3600).optional().describe("Max time to wait when wait=true (default 600). If exceeded, returns the last polled status so you can poll again."),
+      poll_interval_seconds: z.number().int().min(5).max(120).optional().describe("Poll interval when wait=true (default 15)."),
+      history_dates: z.array(z.string()).optional().describe("When wait=true, also fetch history for these YYYY-MM-DD dates (requires regions_indexes)."),
     },
-    async ({ project_id, regions_indexes, folders_ids, folders_ids_depth, groups_ids, do_snapshots, keyword_id }) => {
+    async ({ project_id, regions_indexes, folders_ids, folders_ids_depth, groups_ids, do_snapshots, keyword_id, wait, wait_timeout_seconds, poll_interval_seconds, history_dates }) => {
       const body: Record<string, unknown> = {
         filters: [{ name: "id", operator: "EQUALS", values: [project_id] }],
       };
@@ -468,7 +621,63 @@ NOTE: Uses get/projects_2/projects with show_searchers_and_regions=2 (NOT search
       if (keyword_id !== undefined) body.keyword_id = keyword_id;
       const result = await client.request("edit", "positions_2", "checker/go", body);
       if (!result.ok) return apiError(result.errors);
-      return json(result.result);
+
+      // ASYNC mode (default) — return submit result immediately
+      if (!wait) {
+        return json(result.result);
+      }
+
+      // Wait mode — poll list_projects until the check completes.
+      const timeoutMs = (wait_timeout_seconds ?? 600) * 1000;
+      const intervalMs = (poll_interval_seconds ?? 15) * 1000;
+      const startedAt = Date.now();
+      let polls = 0;
+      let status: unknown = null;
+      let percent: unknown = null;
+
+      const isDone = (s: unknown, p: unknown) => {
+        if (s === "0" || s === 0) return true;
+        const num = typeof p === "number" ? p : typeof p === "string" ? parseInt(p, 10) : NaN;
+        return !Number.isNaN(num) && num >= 100;
+      };
+
+      while (Date.now() - startedAt < timeoutMs) {
+        const pollResult = await client.request("get", "projects_2", "projects", {
+          filters: [{ name: "id", operator: "EQUALS", values: [project_id] }],
+          fields: ["id", "status_positions", "positions_percent"],
+        });
+        if (!pollResult.ok) return apiError(pollResult.errors);
+        const projects = (pollResult.result as Array<Record<string, unknown>>) ?? [];
+        const p = projects[0];
+        if (p) {
+          status = p.status_positions ?? status;
+          percent = p.positions_percent ?? percent;
+          if (isDone(status, percent)) break;
+        }
+        polls++;
+        await new Promise((r) => setTimeout(r, intervalMs));
+      }
+
+      const output: Record<string, unknown> = {
+        submitted: result.result,
+        waited: true,
+        status_positions: status,
+        positions_percent: percent,
+        polls,
+        completed: isDone(status, percent),
+      };
+
+      // Optionally fetch history once collection is done.
+      if (history_dates && history_dates.length > 0 && Array.isArray(regions_indexes) && regions_indexes.length > 0) {
+        const hist = await client.request("get", "positions_2", "history", {
+          project_id,
+          regions_indexes,
+          dates: history_dates,
+        });
+        output.history = hist.ok ? hist.result : { isError: true, errors: hist.errors };
+      }
+
+      return json(output);
     }
   );
 

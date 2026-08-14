@@ -5,7 +5,46 @@
 
 > **Unofficial.** This is an unofficial MCP server and is not affiliated with or endorsed by Topvisor.
 
-An MCP (Model Context Protocol) server for the [Topvisor API v2](https://topvisor.com/api/v2/). Provides 17 tools for Yandex/Google rank tracking: projects, keywords, searchers and regions, position check submission, history, summary charts, SERP snapshots, and account balance. Implements the stateful Topvisor project model — set up project → add searchers/regions → import keywords → submit check (async) → read history.
+An MCP (Model Context Protocol) server for the [Topvisor API v2](https://topvisor.com/api/v2/). Provides 24 tools for Yandex/Google rank tracking: projects, keywords, groups & folders, searchers and regions, position check submission, history, summary charts, SERP snapshots, and account balance. Implements the stateful Topvisor project model — set up project → add searchers/regions → import keywords → submit check (async) → read history.
+
+> 🔀 **Fork of [`SCom-82/topvisor-mcp`](https://github.com/SCom-82/topvisor-mcp).** This repository is a maintained fork that extends the upstream server. See [**What changed in this fork**](#fork-changes-vs-upstream) below for the full list of additions.
+
+## Fork: changes vs upstream
+
+<details>
+<summary>Fork changes vs upstream — added & improved (click to expand)</summary>
+
+**New tools (keywords groups & folders, keyword deletion):**
+- `topvisor_list_groups` — list groups (optionally include trash)
+- `topvisor_add_groups` — add one or more groups
+- `topvisor_delete_groups` — delete (move to trash) groups by `ids` or `filters`
+- `topvisor_list_folders` — list folders
+- `topvisor_add_folders` — add a folder
+- `topvisor_delete_folders` — delete (move to trash) folders by `ids` or `filters`
+- `topvisor_delete_keywords` — delete (move to trash) keywords by `ids` or `filters`
+
+**`topvisor_check_positions` — new `wait` mode (B1):**
+- `wait=true` blocks until the position check completes (polls `status_positions`/`positions_percent`), returning the final status.
+- Configurable `wait_timeout_seconds` (default 600), `poll_interval_seconds` (default 15).
+- Optional `history_dates[]` auto-fetches position history once collection is done — a full «submit → wait → read» flow in a single call.
+
+**Pagination metadata (B4):**
+- `include_meta: true` on list tools returns `{ result, total, limitedBy }` instead of a bare array.
+- Applied to `topvisor_bank_history`, `topvisor_list_projects`, `topvisor_list_keywords`, `topvisor_list_groups`, `topvisor_list_folders`.
+
+**Transport retries (B2):**
+- Automatic retry with exponential backoff + jitter on Topvisor rate-limit errors (code 429) and transient HTTP 5xx.
+- New env var `TOPVISOR_RETRIES` (default 2); disabled by setting `0`.
+- Non-transient errors (e.g. auth code 53, param mismatch 1002) are never retried.
+
+**Test coverage:**
+- Added a vitest suite (11 tests): URL/header building, Topvisor error detection, credentials guard, retry behaviour, and tool-level integration via the real MCP protocol (`InMemoryTransport` + `Client`).
+- `npm test` runs the full suite.
+
+**Docs:**
+- README updated with the new tools, config table (`TOPVISOR_RETRIES`), and the `wait`-mode section.
+
+</details>
 
 ## Installation
 
@@ -46,6 +85,7 @@ node dist/index.js
 | `TOPVISOR_API_KEY` | **yes** | — | Your Topvisor API key (generate in account settings) |
 | `TOPVISOR_API_URL` | no | `https://api.topvisor.com/v2/json` | Override base URL |
 | `TOPVISOR_HTTP_TIMEOUT_MS` | no | `30000` | HTTP request timeout in milliseconds |
+| `TOPVISOR_RETRIES` | no | `2` | Number of retries with backoff on rate-limit (code 429) and transient HTTP 5xx |
 
 The server starts without credentials — `tools/list` and `topvisor_services` work without them. Credentials are validated lazily on the first real API call.
 
@@ -81,8 +121,15 @@ The server starts without credentials — `tools/list` and `topvisor_services` w
 | `topvisor_list_regions` | positions_2 | List configured regions and get their `region_index` values. |
 | `topvisor_list_keywords` | keywords_2 | List keywords in a project. |
 | `topvisor_import_keywords` | keywords_2 | Import keywords via CSV (bulk, with group assignment). |
+| `topvisor_list_groups` | keywords_2 | List groups (optionally include trash). |
+| `topvisor_add_groups` | keywords_2 | Add one or more groups. |
+| `topvisor_delete_groups` | keywords_2 | Delete (trash) groups by id/filters. |
+| `topvisor_list_folders` | keywords_2 | List folders. |
+| `topvisor_add_folders` | keywords_2 | Add a folder. |
+| `topvisor_delete_folders` | keywords_2 | Delete (trash) folders by id/filters. |
+| `topvisor_delete_keywords` | keywords_2 | Delete (trash) keywords by id/filters. |
 | `topvisor_check_price` | positions_2 | Preview cost of a position check without running it. |
-| `topvisor_check_positions` | positions_2 | **ASYNC** submit a position check job. See **checker/go is async** below. |
+| `topvisor_check_positions` | positions_2 | Submit a position check job; optional `wait=true` to block until done and auto-fetch history. See **checker/go is async** below. |
 | `topvisor_get_history` | positions_2 | Read position history for a project and regions. |
 | `topvisor_get_summary` | positions_2 | Get position summary comparing two dates. |
 | `topvisor_get_summary_chart` | positions_2 | Get chart data for position distribution over time. |
@@ -151,7 +198,7 @@ Note: region_key=51 for Yandex corresponds to the Yandex `rids` value for Samara
 2. Poll `topvisor_list_projects` with `fields: ["id","status_positions","positions_percent"]` until the status indicates completion.
 3. Then call `topvisor_get_history` to read the collected positions.
 
-There is no built-in wait/poll in this MCP tool (v1). This is intentional — position checks can take hours, which would exceed MCP client timeouts.
+There is no built-in wait/poll in v1 (position checks can take hours, exceeding MCP client timeouts). **v1.x addition:** `topvisor_check_positions` accepts `wait=true` (plus `wait_timeout_seconds`, `poll_interval_seconds`, and optional `history_dates`) to block until collection completes and optionally auto-fetch history in a single call.
 
 ## SERP snapshots
 
